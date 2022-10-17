@@ -1,6 +1,8 @@
+CROSS_COMPILE=
+
 writer: writer.o
-	gcc -o writer writer.o
+	$(CROSS_COMPILE)gcc -o writer writer.o
 writer.o: writer.c
-	gcc -c writer.c
+	$(CROSS_COMPILE)gcc -c writer.c
 clean: 
-	rm writer *.o
+	rm -f writer *.o

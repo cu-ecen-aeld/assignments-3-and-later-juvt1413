@@ -14,20 +14,23 @@ int main(int argc, const char *argv[]) {
 	const char *filename;
 	const char *writestr;	
 
+	openlog(NULL,0,LOG_USER);
+
 	if(argc != 3){
-		printf("Arguments error\n");
+		syslog(LOG_ERR, "Invalid number of arguments: %d",argc-1);
 		return 1;
 	}	
 	else {
 		filename= argv[1];
 		writestr= argv[2];	
 	}
+	
+	syslog(LOG_DEBUG, "Writing %s to %s", writestr, filename);
 
 	fd = open (filename, O_RDWR|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
-
 	if (fd == -1){
-		printf("file open error: %s\n",strerror(errno));
-	 	return 1;	
+		syslog(LOG_ERR, "error in opening file, %s",strerror(errno));
+		return 1;
 	}
 	
  	written = write (fd, writestr, strlen(writestr));
