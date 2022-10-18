@@ -27,7 +27,7 @@ int main(int argc, const char *argv[]) {
 	
 	syslog(LOG_DEBUG, "Writing %s to %s", writestr, filename);
 
-	fd = open (filename, O_RDWR|O_CREAT, S_IRWXU|S_IRWXG|S_IRWXO);
+	fd = open (filename, O_WRONLY|O_CREAT|O_TRUNC, S_IRWXU|S_IRWXG|S_IRWXO);
 	if (fd == -1){
 		syslog(LOG_ERR, "error in opening file, %s",strerror(errno));
 		return 1;
