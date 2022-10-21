@@ -1,4 +1,9 @@
 #include "systemcalls.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <sys/wait.h>
+ #include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -9,15 +14,20 @@
 */
 bool do_system(const char *cmd)
 {
-
+   
 /*
  * TODO  add your code here
  *  Call the system() function with the command set in the cmd
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+    int ret;
+    
+    ret = system(cmd);
+    
+    if (ret != -1) return true;
 
-    return true;
+    return false;
 }
 
 /**
@@ -47,7 +57,7 @@ bool do_exec(int count, ...)
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+    //command[count] = command[count];
 
 /*
  * TODO:
@@ -57,11 +67,30 @@ bool do_exec(int count, ...)
  *   (first argument to execv), and use the remaining arguments
  *   as second argument to the execv() command.
  *
-*/
-
-    va_end(args);
-
-    return true;
+*/	
+	va_end(args);
+	
+	 int status=-1;
+	 pid_t pid=-1;
+	 
+	 pid = fork();
+	 
+	 if (pid == -1)
+	 	return false;
+	 else if (pid == 0) {
+		 execv (command[0], command);
+		 perror("execv error");
+		 exit(-1);
+	 }
+	 if (waitpid (pid, &status, 0) == -1)
+		 return false;
+	 else if (WIFEXITED (status)){
+		 if (!WEXITSTATUS (status)){
+			 return true;
+		}
+	}
+	
+	return false;
 }
 
 /**
@@ -82,7 +111,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
-    command[count] = command[count];
+    //command[count] = command[count];
 
 
 /*
@@ -92,8 +121,39 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+	va_end(args);
+	
+	int kidpid, status;
+	int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+	if (fd < 0) { 
+		perror("open"); 
+		return false; 
+	}	
+	switch (kidpid = fork()) {
+	  case -1: 
+	  	perror("fork"); 
+	  	return false;
+	  
+	  case 0: 
+	    if (dup2(fd, 1) < 0) { 
+	    	perror("dup2"); 
+	    	exit(-1); 
+	    }
+	    close(fd);
+	    execv(command[0], command); 
+	    perror("execvp"); 
+	    exit(-1);
+	  
+	  default:
+	    close(fd);
+	    if (waitpid (kidpid, &status, 0) == -1)
+		 return false;
+	    else if (WIFEXITED (status)){
+		 if (!WEXITSTATUS (status)){
+			 return true;
+		}	
+	    }    
+	}	
 
-    va_end(args);
-
-    return true;
+    return false;
 }
