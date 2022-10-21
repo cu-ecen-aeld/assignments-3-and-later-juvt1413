@@ -25,9 +25,9 @@ bool do_system(const char *cmd)
     
     ret = system(cmd);
     
-    if (ret != -1) return true;
+    if (ret == -1 || ret == 127) return false;
 
-    return false;
+    return true;
 }
 
 /**
