@@ -12,7 +12,6 @@ BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
-FINDER_APP=/home/dawsari/Documents/ECEN_5713/assignments/assign_1_ssh/assignment-1-juvt1413/finder-app
 
 if [ $# -lt 1 ]
 then
@@ -110,7 +109,7 @@ sudo mknod -m 666 dev/null c 1 3
 sudo mknod -m 600 dev/console c 5 1
 
 # TODO: Clean and build the writer utility
-cd ${FINDER_APP}
+cd ${FINDER_APP_DIR}
 make clean
 make CROSS_COMPILE=${CROSS_COMPILE}
 
