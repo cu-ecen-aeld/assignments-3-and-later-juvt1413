@@ -5,7 +5,7 @@ SEARCH_STR=$2
 
 if [ -z ${FIL_DIR} ] || [ -z ${SEARCH_STR} ]
 then 
-	echo "too few arguments_" 
+	echo "too few arguments" 
 	exit 1
 fi
 
