@@ -1,10 +1,13 @@
-CROSS_COMPILE=
+CC=$(CROSS_COMPILE)gcc
 
-all: writer
+:writer
 
 writer: writer.o
-	$(CROSS_COMPILE)gcc -o writer writer.o
+	$(CC) -o writer writer.o
 writer.o: writer.c
-	$(CROSS_COMPILE)gcc -c writer.c
+	$(CC) -c writer.c
+		
+all: writer
+	
 clean: 
 	rm -f writer *.o
