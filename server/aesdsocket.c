@@ -112,7 +112,7 @@ int main(int argc, const char *argv[])
 							else if(recvd_size != 0){
 								//printf("\nrecvd_size = %ld\n", recvd_size);
 								//write buf to file
-								file_fd = open (RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
+								file_fd = open (RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, 777); // 777 == S_IRWXU|S_IRWXG|S_IRWXO
 								if (file_fd == -1) printf("file open error\n");	
 								write(file_fd, buf, recvd_size);
 								close(file_fd);							
