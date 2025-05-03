@@ -11,35 +11,152 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <pthread.h>
+#include <time.h>
 
 #define RCV_FILE "/var/tmp/aesdsocketdata"
-#define MAX_BUF 1024
+#define MAX_BUF 1024*16
+#define TIMESTAMP_INTERVAL 10
 
-int fd, rcvfd, file_fd;
+// Thread-safe linked list node structure
+struct thread_node {
+    pthread_t thread;
+    struct thread_node *next;
+};
+
+// Global variables
+int fd, file_fd;
 bool break_f = false;
-char *buf, *snd_buf, *client_addr;
+pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct thread_node *thread_list_head = NULL;
+pthread_mutex_t list_mutex = PTHREAD_MUTEX_INITIALIZER;
+timer_t timerid;
 
-static void signal_handler ( int signal_number )
-{
+// Thread data structure
+struct thread_data {
+    int rcvfd;
+    struct sockaddr_in rcvaddr;
+};
+
+// Function prototypes
+void add_thread_to_list(pthread_t thread);
+void cleanup_threads(void);
+void *connection_handler(void *thread_arg);
+void write_timestamp(void);
+
+static void timer_handler(union sigval sigval) {
+    write_timestamp();
+}
+
+void write_timestamp(void) {
+    time_t now;
+    char timestamp[100];
+    time(&now);
+    strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %H:%M:%S %z\n", localtime(&now));
+    
+    pthread_mutex_lock(&file_mutex);
+    file_fd = open(RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, 0666);
+    if (file_fd != -1) {
+        write(file_fd, timestamp, strlen(timestamp));
+        close(file_fd);
+    }
+    pthread_mutex_unlock(&file_mutex);
+}
+
+static void signal_handler(int signal_number) {
     if (signal_number == SIGINT || signal_number == SIGTERM) {
-        printf("\nCaught signal\n");
         syslog(LOG_DEBUG, "Caught signal, exiting");
+        break_f = true;
         
-        //close opend file
-        close(file_fd);	
-        remove(RCV_FILE);        
+        // Stop timer
+        timer_delete(timerid);
         
-        //close all socket
-        shutdown(rcvfd, SHUT_RDWR);
-        close(rcvfd);
+        // Cleanup threads
+        cleanup_threads();
+        
+        // Cleanup files and sockets
+        close(file_fd);
+        remove(RCV_FILE);
         close(fd);
-        break_f = true;	    
     }
 }
 
+void *connection_handler(void *thread_arg) {
+    struct thread_data *data = (struct thread_data *)thread_arg;
+    char *buf = malloc(MAX_BUF * sizeof(char));
+    char *snd_buf = malloc(MAX_BUF * sizeof(char));
+    char *client_addr = malloc(100 * sizeof(char));
+    
+    inet_ntop(AF_INET, &(data->rcvaddr.sin_addr), client_addr, 100);
+    syslog(LOG_DEBUG, "Accepted connection from %s", client_addr);
+    
+    ssize_t recvd_size = 0;
+    char *complete_msg = NULL;
+    size_t complete_size = 0;
+    
+    // Read until we get a complete message (ending in newline)
+    while ((recvd_size = recv(data->rcvfd, buf, MAX_BUF - 1, 0)) > 0) {
+        buf[recvd_size] = '\0';
+        
+        // Append received data to complete message
+        char *new_complete = realloc(complete_msg, complete_size + recvd_size);
+        if (new_complete) {
+            complete_msg = new_complete;
+            memcpy(complete_msg + complete_size, buf, recvd_size);
+            complete_size += recvd_size;
+        }
+        
+        // Check if we have a complete message
+        if (memchr(buf, '\n', recvd_size)) {
+            // Lock the mutex before writing the complete message
+            pthread_mutex_lock(&file_mutex);
+            
+            // Write the complete message
+            file_fd = open(RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, 0666);
+            if (file_fd != -1) {
+                write(file_fd, complete_msg, complete_size);
+                close(file_fd);
+                
+                // Read and send back all data
+                file_fd = open(RCV_FILE, O_RDONLY);
+                if (file_fd != -1) {
+                    ssize_t total_size = lseek(file_fd, 0, SEEK_END);
+                    lseek(file_fd, 0, SEEK_SET);
+                    
+                    while (total_size > 0) {
+                        ssize_t read_size = read(file_fd, snd_buf, MAX_BUF - 1);
+                        if (read_size > 0) {
+                            send(data->rcvfd, snd_buf, read_size, 0);
+                            total_size -= read_size;
+                        }
+                    }
+                    close(file_fd);
+                }
+            }
+            
+            pthread_mutex_unlock(&file_mutex);
+            
+            // Reset the complete message buffer
+            free(complete_msg);
+            complete_msg = NULL;
+            complete_size = 0;
+        }
+    }
+    
+    // Cleanup
+    free(complete_msg);
+    shutdown(data->rcvfd, SHUT_RDWR);
+    close(data->rcvfd);
+    syslog(LOG_DEBUG, "Closed connection from %s", client_addr);
+    
+    free(buf);
+    free(snd_buf);
+    free(client_addr);
+    free(data);
+    return NULL;
+}
 
-int main(int argc, const char *argv[])
-{
+int main(int argc, const char *argv[]) {
 	openlog(NULL,0,LOG_USER);
 	
 	struct sigaction new_action;
@@ -84,6 +201,24 @@ int main(int argc, const char *argv[])
 				
 				remove(RCV_FILE);
 				
+				// Setup timer
+				struct sigevent sev;
+				struct itimerspec its;
+				
+				sev.sigev_notify = SIGEV_THREAD;
+				sev.sigev_notify_function = timer_handler;
+				sev.sigev_notify_attributes = NULL;
+				sev.sigev_value.sival_ptr = NULL;
+				
+				timer_create(CLOCK_REALTIME, &sev, &timerid);
+				
+				its.it_value.tv_sec = TIMESTAMP_INTERVAL;
+				its.it_value.tv_nsec = 0;
+				its.it_interval.tv_sec = TIMESTAMP_INTERVAL;
+				its.it_interval.tv_nsec = 0;
+				
+				timer_settime(timerid, 0, &its, NULL);
+				
 				while(!break_f){
 					
 					printf("Listening...\n");				
@@ -93,63 +228,19 @@ int main(int argc, const char *argv[])
 					socklen_t addr_len = sizeof(rcvaddr);				
 					
 					//accept new client
-					rcvfd = accept(fd, (struct sockaddr*)&rcvaddr, &addr_len);
+					int rcvfd = accept(fd, (struct sockaddr*)&rcvaddr, &addr_len);
 					
 					if(rcvfd != -1) {	 				
-						if((buf = malloc(1000*sizeof(char))) == NULL) printf("ERROR: malloc return NULL");				
-						if((client_addr = malloc(100*sizeof(char))) == NULL) printf("ERROR: malloc return NULL");										
-						ssize_t recvd_size=0, byts_to_send=0;
+						struct thread_data *data = malloc(sizeof(struct thread_data));
+						data->rcvfd = rcvfd;
+						data->rcvaddr = rcvaddr;
 						
-						inet_ntop(AF_INET, &(rcvaddr.sin_addr), client_addr, 100);					
-						printf("Accepted connection from: %s\n", client_addr);
-						syslog(LOG_DEBUG, "Accepted connection from %s", client_addr);	
+						pthread_t thread;
+						pthread_create(&thread, NULL, connection_handler, data);
+						add_thread_to_list(thread);
 						
-						if((snd_buf = malloc(MAX_BUF*sizeof(char))) == NULL) printf("ERROR: malloc return NULL");
-						 
-						do{
-							recvd_size = recv(rcvfd, buf, sizeof(buf), 0);
-							if (recvd_size == -1) perror("recv()");
-							else if(recvd_size != 0){
-								//printf("\nrecvd_size = %ld\n", recvd_size);
-								//write buf to file
-								file_fd = open (RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, 777); // 777 == S_IRWXU|S_IRWXG|S_IRWXO
-								if (file_fd == -1) printf("file open error\n");	
-								write(file_fd, buf, recvd_size);
-								close(file_fd);							
-								//check for new line						
-								for(int i=0; i<recvd_size; i++){								
-									if(*(buf+i) == '\n') {
-										//printf("\nnew line detected\n");
-										//calculate file size								
-										file_fd = open (RCV_FILE, O_RDONLY);
-										byts_to_send = lseek(file_fd, 0, SEEK_END);
-										close(file_fd);
-										//printf("\nbytes to send: %ld\n", byts_to_send);							
-										//open the file to read								
-										file_fd = open (RCV_FILE, O_RDONLY);
-										int red_bytes=MAX_BUF;
-										while(red_bytes == MAX_BUF){
-											red_bytes = read(file_fd, snd_buf, MAX_BUF);											
-											//send file to client
-											int snt_byts = send(rcvfd, snd_buf, red_bytes, 0);
-											if(snt_byts ==-1) perror("send()");
-										}
-										close(file_fd); 					 	
-									}
-								}							
-							}						
-						}
-						while(recvd_size != 0 && recvd_size != -1);					
-						close(file_fd);											
-						
-						shutdown(rcvfd, SHUT_RDWR);
-						close(rcvfd);
-						printf("Closed connection from: %s\n", client_addr);
-						syslog(LOG_DEBUG, "Closed connection from %s", client_addr);
-						
-						free(client_addr);
-						free(buf);
-						free(snd_buf);						
+						printf("Accepted connection from: %s\n", inet_ntoa(rcvaddr.sin_addr));
+						syslog(LOG_DEBUG, "Accepted connection from %s", inet_ntoa(rcvaddr.sin_addr));	
 					}
 					else perror("accept()");															
 				}
@@ -167,6 +258,29 @@ int main(int argc, const char *argv[])
 	else perror("socket()");
 	
 	return 0;
+}
+
+void add_thread_to_list(pthread_t thread) {
+    struct thread_node *node = malloc(sizeof(struct thread_node));
+    node->thread = thread;
+    
+    pthread_mutex_lock(&list_mutex);
+    node->next = thread_list_head;
+    thread_list_head = node;
+    pthread_mutex_unlock(&list_mutex);
+}
+
+void cleanup_threads(void) {
+    pthread_mutex_lock(&list_mutex);
+    struct thread_node *current = thread_list_head;
+    while (current != NULL) {
+        pthread_join(current->thread, NULL);
+        struct thread_node *next = current->next;
+        free(current);
+        current = next;
+    }
+    thread_list_head = NULL;
+    pthread_mutex_unlock(&list_mutex);
 }
 
 
