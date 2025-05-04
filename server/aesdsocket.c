@@ -13,22 +13,25 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/queue.h>
 
 #define RCV_FILE "/var/tmp/aesdsocketdata"
 #define MAX_BUF 1024*16
 #define TIMESTAMP_INTERVAL 10
 
-// Thread-safe linked list node structure
-struct thread_node {
+// Define the list entry structure
+struct thread_entry {
     pthread_t thread;
-    struct thread_node *next;
+    SLIST_ENTRY(thread_entry) entries;
 };
+
+// Define the list head
+SLIST_HEAD(thread_list, thread_entry) head = SLIST_HEAD_INITIALIZER(head);
 
 // Global variables
 int fd, file_fd;
 bool break_f = false;
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
-struct thread_node *thread_list_head = NULL;
 pthread_mutex_t list_mutex = PTHREAD_MUTEX_INITIALIZER;
 timer_t timerid;
 
@@ -261,29 +264,22 @@ int main(int argc, const char *argv[]) {
 }
 
 void add_thread_to_list(pthread_t thread) {
-    struct thread_node *node = malloc(sizeof(struct thread_node));
-    node->thread = thread;
+    struct thread_entry *entry = malloc(sizeof(struct thread_entry));
+    entry->thread = thread;
     
     pthread_mutex_lock(&list_mutex);
-    node->next = thread_list_head;
-    thread_list_head = node;
+    SLIST_INSERT_HEAD(&head, entry, entries);
     pthread_mutex_unlock(&list_mutex);
 }
 
 void cleanup_threads(void) {
     pthread_mutex_lock(&list_mutex);
-    struct thread_node *current = thread_list_head;
-    while (current != NULL) {
-        pthread_join(current->thread, NULL);
-        struct thread_node *next = current->next;
-        free(current);
-        current = next;
+    struct thread_entry *entry;
+    while (!SLIST_EMPTY(&head)) {
+        entry = SLIST_FIRST(&head);
+        pthread_join(entry->thread, NULL);
+        SLIST_REMOVE_HEAD(&head, entries);
+        free(entry);
     }
-    thread_list_head = NULL;
     pthread_mutex_unlock(&list_mutex);
 }
-
-
-
-
-
