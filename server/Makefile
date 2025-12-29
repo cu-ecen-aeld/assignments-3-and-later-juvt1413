@@ -1,5 +1,5 @@
 CC?=gcc
-CFLAGS?=-g -Wall -pthread
+CFLAGS?=-g -Wall -pthread -DUSE_AESD_CHAR_DEVICE=1
 LDFLAGS?=-pthread
 
 all: aesdsocket

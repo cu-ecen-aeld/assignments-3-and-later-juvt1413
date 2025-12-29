@@ -15,7 +15,15 @@
 #include <time.h>
 #include <sys/queue.h>
 
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
+#if USE_AESD_CHAR_DEVICE
+#define RCV_FILE "/dev/aesdchar"
+#else
 #define RCV_FILE "/var/tmp/aesdsocketdata"
+#endif
 #define MAX_BUF 1024*16
 #define TIMESTAMP_INTERVAL 10
 
@@ -29,11 +37,13 @@ struct thread_entry {
 SLIST_HEAD(thread_list, thread_entry) head = SLIST_HEAD_INITIALIZER(head);
 
 // Global variables
-int fd, file_fd;
+int fd;
 bool break_f = false;
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t list_mutex = PTHREAD_MUTEX_INITIALIZER;
+#if !USE_AESD_CHAR_DEVICE
 timer_t timerid;
+#endif
 
 // Thread data structure
 struct thread_data {
@@ -45,8 +55,11 @@ struct thread_data {
 void add_thread_to_list(pthread_t thread);
 void cleanup_threads(void);
 void *connection_handler(void *thread_arg);
+#if !USE_AESD_CHAR_DEVICE
 void write_timestamp(void);
+#endif
 
+#if !USE_AESD_CHAR_DEVICE
 static void timer_handler(union sigval sigval) {
     write_timestamp();
 }
@@ -54,6 +67,7 @@ static void timer_handler(union sigval sigval) {
 void write_timestamp(void) {
     time_t now;
     char timestamp[100];
+    int file_fd;
     time(&now);
     strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %H:%M:%S %z\n", localtime(&now));
     
@@ -65,21 +79,25 @@ void write_timestamp(void) {
     }
     pthread_mutex_unlock(&file_mutex);
 }
+#endif
 
 static void signal_handler(int signal_number) {
     if (signal_number == SIGINT || signal_number == SIGTERM) {
         syslog(LOG_DEBUG, "Caught signal, exiting");
         break_f = true;
         
+#if !USE_AESD_CHAR_DEVICE
         // Stop timer
         timer_delete(timerid);
+#endif
         
         // Cleanup threads
         cleanup_threads();
         
         // Cleanup files and sockets
-        close(file_fd);
+#if !USE_AESD_CHAR_DEVICE
         remove(RCV_FILE);
+#endif
         close(fd);
     }
 }
@@ -111,11 +129,16 @@ void *connection_handler(void *thread_arg) {
         
         // Check if we have a complete message
         if (memchr(buf, '\n', recvd_size)) {
+            int file_fd;
             // Lock the mutex before writing the complete message
             pthread_mutex_lock(&file_mutex);
             
             // Write the complete message
+#if USE_AESD_CHAR_DEVICE
+            file_fd = open(RCV_FILE, O_WRONLY);
+#else
             file_fd = open(RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, 0666);
+#endif
             if (file_fd != -1) {
                 write(file_fd, complete_msg, complete_size);
                 close(file_fd);
@@ -123,6 +146,13 @@ void *connection_handler(void *thread_arg) {
                 // Read and send back all data
                 file_fd = open(RCV_FILE, O_RDONLY);
                 if (file_fd != -1) {
+#if USE_AESD_CHAR_DEVICE
+                    // For char device, read until EOF
+                    ssize_t read_size;
+                    while ((read_size = read(file_fd, snd_buf, MAX_BUF - 1)) > 0) {
+                        send(data->rcvfd, snd_buf, read_size, 0);
+                    }
+#else
                     ssize_t total_size = lseek(file_fd, 0, SEEK_END);
                     lseek(file_fd, 0, SEEK_SET);
                     
@@ -133,6 +163,7 @@ void *connection_handler(void *thread_arg) {
                             total_size -= read_size;
                         }
                     }
+#endif
                     close(file_fd);
                 }
             }
@@ -202,6 +233,7 @@ int main(int argc, const char *argv[]) {
 			//start listining
 			if(listen(fd, 5) == 0){
 				
+#if !USE_AESD_CHAR_DEVICE
 				remove(RCV_FILE);
 				
 				// Setup timer
@@ -221,6 +253,7 @@ int main(int argc, const char *argv[]) {
 				its.it_interval.tv_nsec = 0;
 				
 				timer_settime(timerid, 0, &its, NULL);
+#endif
 				
 				while(!break_f){
 					
