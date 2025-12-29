@@ -190,8 +190,9 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         new_entry.buffptr = complete_buffer;
         new_entry.size = complete_size;
         
+        // If buffer is full, free the entry at in_offs (which will be overwritten)
         if (dev->circular_buffer.full) {
-            old_entry = &dev->circular_buffer.entry[dev->circular_buffer.out_offs];
+            old_entry = &dev->circular_buffer.entry[dev->circular_buffer.in_offs];
             if (old_entry->buffptr) {
                 kfree(old_entry->buffptr);
             }
