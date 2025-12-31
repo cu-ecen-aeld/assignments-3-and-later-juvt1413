@@ -14,6 +14,8 @@
 #include <pthread.h>
 #include <time.h>
 #include <sys/queue.h>
+#include <sys/ioctl.h>
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #ifndef USE_AESD_CHAR_DEVICE
 #define USE_AESD_CHAR_DEVICE 1
@@ -129,44 +131,93 @@ void *connection_handler(void *thread_arg) {
         
         // Check if we have a complete message
         if (memchr(buf, '\n', recvd_size)) {
-            int file_fd;
-            // Lock the mutex before writing the complete message
+            int file_fd = -1;
+            bool is_seek_command = false;
+            struct aesd_seekto seekto;
+            
+            // Check if this is a seek command: AESDCHAR_IOCSEEKTO:X,Y
+            if (complete_size >= strlen("AESDCHAR_IOCSEEKTO:") && 
+                memcmp(complete_msg, "AESDCHAR_IOCSEEKTO:", strlen("AESDCHAR_IOCSEEKTO:")) == 0) {
+                // Parse the command
+                char *colon_pos = strchr(complete_msg, ':');
+                if (colon_pos) {
+                    char *comma_pos = strchr(colon_pos + 1, ',');
+                    if (comma_pos) {
+                        unsigned int write_cmd, write_cmd_offset;
+                        if (sscanf(colon_pos + 1, "%u,%u", &write_cmd, &write_cmd_offset) == 2) {
+                            seekto.write_cmd = write_cmd;
+                            seekto.write_cmd_offset = write_cmd_offset;
+                            is_seek_command = true;
+                        }
+                    }
+                }
+            }
+            
+            // Lock the mutex before accessing the device
             pthread_mutex_lock(&file_mutex);
             
-            // Write the complete message
 #if USE_AESD_CHAR_DEVICE
-            file_fd = open(RCV_FILE, O_WRONLY);
-#else
-            file_fd = open(RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, 0666);
-#endif
-            if (file_fd != -1) {
-                write(file_fd, complete_msg, complete_size);
-                close(file_fd);
+            if (is_seek_command) {
+                // Open file descriptor for ioctl and read (same fd for both)
+                file_fd = open(RCV_FILE, O_RDWR);
+                if (file_fd != -1) {
+                    // Perform ioctl to seek
+                    if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) == -1) {
+                        syslog(LOG_ERR, "ioctl failed: %s", strerror(errno));
+                    }
+                    
+                    // Read and send back all data from current position
+                    ssize_t read_size;
+                    while ((read_size = read(file_fd, snd_buf, MAX_BUF - 1)) > 0) {
+                        send(data->rcvfd, snd_buf, read_size, 0);
+                    }
+                    close(file_fd);
+                }
+            } else {
+                // Regular write command
+                file_fd = open(RCV_FILE, O_WRONLY);
+                if (file_fd != -1) {
+                    write(file_fd, complete_msg, complete_size);
+                    close(file_fd);
+                }
                 
                 // Read and send back all data
                 file_fd = open(RCV_FILE, O_RDONLY);
                 if (file_fd != -1) {
-#if USE_AESD_CHAR_DEVICE
                     // For char device, read until EOF
                     ssize_t read_size;
                     while ((read_size = read(file_fd, snd_buf, MAX_BUF - 1)) > 0) {
                         send(data->rcvfd, snd_buf, read_size, 0);
                     }
-#else
-                    ssize_t total_size = lseek(file_fd, 0, SEEK_END);
-                    lseek(file_fd, 0, SEEK_SET);
-                    
-                    while (total_size > 0) {
-                        ssize_t read_size = read(file_fd, snd_buf, MAX_BUF - 1);
-                        if (read_size > 0) {
-                            send(data->rcvfd, snd_buf, read_size, 0);
-                            total_size -= read_size;
-                        }
-                    }
-#endif
                     close(file_fd);
                 }
             }
+#else
+            // Write the complete message (unless it's a seek command)
+            if (!is_seek_command) {
+                file_fd = open(RCV_FILE, O_WRONLY|O_CREAT|O_APPEND, 0666);
+                if (file_fd != -1) {
+                    write(file_fd, complete_msg, complete_size);
+                    close(file_fd);
+                }
+            }
+            
+            // Read and send back all data
+            file_fd = open(RCV_FILE, O_RDONLY);
+            if (file_fd != -1) {
+                ssize_t total_size = lseek(file_fd, 0, SEEK_END);
+                lseek(file_fd, 0, SEEK_SET);
+                
+                while (total_size > 0) {
+                    ssize_t read_size = read(file_fd, snd_buf, MAX_BUF - 1);
+                    if (read_size > 0) {
+                        send(data->rcvfd, snd_buf, read_size, 0);
+                        total_size -= read_size;
+                    }
+                }
+                close(file_fd);
+            }
+#endif
             
             pthread_mutex_unlock(&file_mutex);
             
